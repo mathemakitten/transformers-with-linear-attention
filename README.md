@@ -20,3 +20,34 @@ Softmax attention currently scales on the order of O(n), where `n` refers to the
 
 #### Outstanding questions to be answered
 * What in the world are RNNs with fast weights? (TODO: read this paper)
+
+### TODO 
+
+### Baseline Softmax Attention Transformer
+* [ ] Write logs 
+* [ ] Write preds to disk for each word in the vocabulary at each timestep 
+(this will be needed later for comparison)
+* [ ] Include callback to write metrics to Tensorboard?
+* [ ] Write BLEU score at each timestep (free if logs written)
+* [ ] Train tiny transformer with the above 
+* [ ] Adapt tiny transformer with linear attention to have functionality 
+which evaluates the KL-divergence between preds after training
+    * For any word in the test input, 
+    given the predicted probs P(x) and actual distribution Q(x)
+    over the entire vocabulary, 
+    we should calculate the discrete KL-divergence with -P(x) * log (Q(x)/P(x))
+    * This means we need to store preds at every single output of the last normalized attention layer 
+    at a cost of `O(nm)` 
+    where `n = number of input tokens` and `m = target vocabulary size`
+    
+### Dataset stats 
+Writing these down for my own personal sanity.
+
+**2014 WMT English - German**
+* newstest2014.en & newstest2014.de
+
+| Attribute        | English           | German  |
+| ------------- |:-------------:| -----:|
+| sentences      | 3003 | 3003 |
+| # words      | 59325      |  54865 |
+| vocab size | 14098      |    16818 |
