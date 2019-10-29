@@ -24,11 +24,13 @@ Softmax attention currently scales on the order of O(n), where `n` refers to the
 ### TODO 
 
 ### Baseline Softmax Attention Transformer
-* [ ] Write logs 
+* [x] Write logs 
+    * [x] Training time, BLEU score
 * [ ] Write preds to disk for each word in the vocabulary at each timestep 
 (this will be needed later for comparison)
-* [ ] Include callback to write metrics to Tensorboard?
-* [ ] Write BLEU score at each timestep (free if logs written)
+* [x] Include callback to write metrics to Tensorboard
+    * Turns out this is doable by setting `enable_tensorboard=true`
+* [x] Write BLEU score at each timestep (free if logs written)
 * [ ] Train tiny transformer with the above 
 * [ ] Adapt tiny transformer with linear attention to have functionality 
 which evaluates the KL-divergence between preds after training
@@ -51,3 +53,5 @@ Writing these down for my own personal sanity.
 | sentences      | 3003 | 3003 |
 | # words      | 59325      |  54865 |
 | vocab size | 14098      |    16818 |
+
+I suppose `O(n = 16818)` *is* rather prohibitive, isn't it?
