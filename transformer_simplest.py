@@ -1,46 +1,56 @@
-""" Transformer implementation in Tensorflow 2.
+""" Transformer implementation in Tensorflow 2.0 from scratch.
 This is really just the decoder block stripped from the official GPT-2 implementation.
 """
-# TODO kill the estimator class and replace with Keras
-# TODO new dataset
 
 import os
 import numpy as np
-
-#os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+import argparse
+import time
+from utils import get_logger
 os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 
-# os.environ['PATH'] = '$PATH:/usr/local/cuda-10.0/bin'
-os.environ['CUDADIR']='/usr/local/cuda-10.0'
-# os.environ['LD_LIBRARY_PATH'] = '$LD_LIBRARY_PATH:/usr/local/cuda-10.0/lib64'
+# Argparse setup
+parser = argparse.ArgumentParser(description='tiny transformer with linear attention',
+                                 formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
-# export PATH=$PATH:/usr/local/cuda-10.0/bin
-# export CUDADIR=/usr/local/cuda-10.0
-# export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/cuda-10.0/lib64
+parser.add_argument('--run_name', metavar='PATH', type=str, default='run', help='Directory name for run.')
+parser.add_argument('--eager', metavar='eager_mode', type=bool, default=False, help='Eager mode on, else Autograph')
+parser.add_argument('--linear_attention', metavar='linear_attn_flag', type=bool, default=False, help='Whether to use linear attn')
 
+args = parser.parse_args()
+
+# Tensorflow env setup
 import tensorflow as tf
 import tensorflow_datasets as tfds
+tf.config.experimental_run_functions_eagerly(args.eager)
 
-#tf.config.experimental_run_functions_eagerly(True)
+# Logger setup
+logger = get_logger('TRAIN', args.run_name)
 
-NUM_LABELS = 2
+# Constants + params
+#NUM_LABELS = 2
+tf.random.set_seed(1)
+
 
 class Params:  # TODO move this to not be... here
     def __init__(self):
         self.learning_rate = 1e-4
         self.batch_size = 32
         self.vocab_size = 8185
-        self.num_heads = 16
+        self.num_heads = 4  # TODO check this implementation, why does it OOM?
         self.max_context = 1024
         self.embedding_dim = 512
         self.ffn_expansion = 4
         self.is_training = True
-        self.num_blocks = 12
+        self.num_blocks = 1
+        self.logdir = 'tensorboard/' + args.run_name  #'tensorboard'
+        #self.num_labels = 2
 
 
 params = Params()
 
 
+'''
 def trim_or_pad(example):
     example_length = tf.shape(input=example["text"])[0]
     example["text"] = tf.cond(pred=example_length < params.max_context,
@@ -52,7 +62,7 @@ def trim_or_pad(example):
         "text": example["text"],
         "label": example["label"]
     }
-
+'''
 
 
 def dict_to_tuple(example):
@@ -73,8 +83,10 @@ dataset, info = tfds.load(name='imdb_reviews/subwords8k', with_info=True, split=
 
 #input_data = dataset.take(50000).shuffle(1000).map(trim_or_pad).repeat(1).batch(params.batch_size)
 input_data = dataset.take(50000).shuffle(1000).map(dict_to_tuple)\
-    .padded_batch(batch_size=params.batch_size,padded_shapes=([None],[]), padding_values=(0, 0.0))\
-    .repeat(1)
+    .padded_batch(batch_size=params.batch_size, padded_shapes=([None], []), padding_values=(0, 0.0))\
+    .repeat(100)
+
+
 
 
 def get_embeddings(input_data, hparams):
@@ -85,8 +97,6 @@ def get_embeddings(input_data, hparams):
     embedded_inputs = norm(embed_tokens(input_sequence, hparams))
 
     return embedded_inputs, label
-#
-#ugh, label = get_embeddings(input_data, params)
 
 
 def shape_list(x):
@@ -141,7 +151,7 @@ class PositionalEncodingLayer(tf.keras.layers.Layer):
 
 def embed_tokens(tokens, hparams, *, scope="embeddings"):
     with tf.compat.v1.variable_scope(scope, reuse=tf.compat.v1.AUTO_REUSE):
-        print(tokens.shape)
+        #print(tokens.shape)
         position_embeddings = tf.compat.v1.get_variable(
             'position_embeddings', [hparams.max_context, hparams.embedding_dim],
             initializer=tf.compat.v1.random_normal_initializer(stddev=0.01))
@@ -149,8 +159,8 @@ def embed_tokens(tokens, hparams, *, scope="embeddings"):
             'token_embeddings', [hparams.vocab_size, hparams.embedding_dim],
             initializer=tf.compat.v1.random_normal_initializer(stddev=0.02))
 
-    pe = tf.einsum("sc,cd->sd", positions_for(tokens, one_hot=True),
-                   position_embeddings)
+    pe = tf.matmul(positions_for(tokens, one_hot=True), position_embeddings, transpose_b=True)
+    #pe = tf.einsum("sc,cd->sd", positions_for(tokens, one_hot=True), position_embeddings)
     pe = expand_tile(pe, tf.shape(input=tokens)[0])
     return tf.gather(token_embeddings, tokens) + pe
 
@@ -180,31 +190,49 @@ def conv1d(x, scope, neurons, *, w_init_stdev=0.02):
             start + [neurons])
         return c
 
-
-def mlp(x, scope, n_state, *, hparams):
+'''
+def mlp(x, scope, neurons, *, hparams):
     with tf.compat.v1.variable_scope(scope):
-        assert int(n_state) - n_state == 0.0
-        n_state = int(n_state)
+        assert int(neurons) - neurons == 0.0
+        neurons = int(neurons)
         nx = x.shape[-1]  # .value
-        #h = tf.nn.relu(conv1d(x, 'c_fc', n_state))
-        h = tf.nn.relu(tf.keras.layers.Dense(n_state)(x))
+        #h = tf.nn.relu(conv1d(x, 'c_fc', neurons))
+        h = tf.nn.relu(tf.keras.layers.Dense(neurons)(x))
         #h2 = conv1d(h, 'c_proj', nx)
         h2 = tf.keras.layers.Dense(nx)(h)
+        return h2
+'''
+
+class mlp(tf.keras.layers.Layer):
+
+    def __init__(self, neurons):
+        super(mlp, self).__init__()
+        self.neurons = int(neurons)
+        self.ffn_dim = params.embedding_dim  # still all the same dims...
+        self.hidden1 = tf.keras.layers.Dense(units=self.neurons, activation='relu', name='mlp_h1')
+        self.hidden2 = tf.keras.layers.Dense(units=self.ffn_dim, name='mlp_h2')
+
+    def call(self, x):
+        #h = tf.nn.relu(tf.keras.layers.Dense(self.neurons)(x))
+        #h2 = tf.keras.layers.Dense(x.shape[-1])(h)
+        h = self.hidden1(x)
+        h2 = self.hidden2(h)
         return h2
 
 
 class decoder_block(tf.keras.layers.Layer):
-    # TODO: attention  dropout
+    # TODO: attention dropout
 
     def __init__(self, num_heads, scope='decoder'):
         super(decoder_block, self).__init__()
 
         self.projections = [tf.keras.layers.Dense(params.embedding_dim * 3 // params.num_heads) for _ in range(num_heads)]
         #self.dense1 = tf.keras.layers.Dense(params.embedding_dim * 3 // params.num_heads)
-        self.multihead_attn = tf.keras.layers.Dense(params.embedding_dim)
-        self.layernorm1 = tf.keras.layers.LayerNormalization()
-        self.layernorm2 = tf.keras.layers.LayerNormalization()
+        self.multihead_attn = tf.keras.layers.Dense(params.embedding_dim, name='multihead_attn')
+        self.layernorm1 = tf.keras.layers.LayerNormalization(name='layernorm1')
+        self.layernorm2 = tf.keras.layers.LayerNormalization(name='layernorm2')
         self.scope = scope
+        self.mlp = mlp(neurons=params.embedding_dim * params.ffn_expansion)
 
     def call(self, x):
 
@@ -219,8 +247,13 @@ class decoder_block(tf.keras.layers.Layer):
             q, k, v = tf.split(d, num_or_size_splits=3, axis=-1)
             dim_k = tf.shape(k)[1]
             qk_t = tf.matmul(q, k, transpose_b=True) * tf.math.rsqrt(tf.cast(dim_k, dtype=tf.float32))
-            x = tf.matmul(tf.nn.softmax(qk_t), v)
-            all_heads.append(x)
+
+            if args.linear_attention:
+                head = tf.matmul(qk_t, v)
+            else:
+                head = tf.matmul(tf.nn.softmax(qk_t), v)  # regular softmax scaled dot product attention
+
+            all_heads.append(head)
 
         all_heads_tensor = tf.concat(all_heads, axis=-1)
         #multihead_attn = conv1d(all_heads_tensor, scope=scope + 'proj', neurons=params.embedding_dim)
@@ -231,36 +264,35 @@ class decoder_block(tf.keras.layers.Layer):
         #x = norm(x, scope=scope + 'norm')
         x = self.layernorm1(x)
         residual2 = x
-        x = mlp(x, scope=self.scope + 'mlp', n_state=params.embedding_dim * params.ffn_expansion, hparams=params)
+        #x = mlp(x, scope=self.scope + 'mlp', neurons=params.embedding_dim * params.ffn_expansion, hparams=params)
+        x = self.mlp(x)
         x = x + residual2
         #x = norm(x, scope=scope + 'norm2')
         x = self.layernorm2(x)
 
+        #print("DIM FFN is the same as output of this layer which is {}".format(x.shape))
+
         return x
 
 
-
-
-
-# same as the below, but implemented with the imperative API
 class TinyTransformer(tf.keras.Model):
     def __init__(self, params):
         super(TinyTransformer, self).__init__(self)
         self.hparams = params
-        self.embedding_layer = tf.keras.layers.Embedding(params.vocab_size,
-                                                    params.embedding_dim)
+        self.embedding_layer = tf.keras.layers.Embedding(params.vocab_size, params.embedding_dim, name='embedding_layer')
         self.positional_embeddings = PositionalEncodingLayer(max_position=params.max_context, d_model=params.embedding_dim)
-        self.optimizer = tf.keras.optimizers.Adam()
+        self.optimizer = tf.keras.optimizers.Adam(lr=params.learning_rate)
 
         self.blocks = []
         for i in range(params.num_blocks):  # 4x more decoder blocks
             self.blocks.append(decoder_block(num_heads=params.num_heads, scope=str(i)))
 
-        self.final_dense = tf.keras.layers.Dense(units=1)
+        self.hidden = tf.keras.layers.Dense(units=params.embedding_dim, activation='relu', name='final_hidden')
+        self.final_dense = tf.keras.layers.Dense(units=1, name='final_dense')
 
 
     def call(self, inputs):
-        #[batch_size, tokens]
+
         # Embed inputs
         embedded_inputs = self.embedding_layer(inputs)
         embedded_inputs_with_positions = embedded_inputs + self.positional_embeddings(tf.shape(inputs)[1])
@@ -273,8 +305,10 @@ class TinyTransformer(tf.keras.Model):
             x = block(x)
 
         #x = tf.reshape(x, [self.hparams.batch_size, tf.reduce_prod(input_tensor=x.shape[1:])])
-        #x = x[:, 0]
-        x = tf.reduce_mean(x, axis=1)  # TODO reduce better
+        x = x[:, 0]  # this is better than the reduce_mean according to our friend Bert
+        #x = tf.reduce_mean(x, axis=1)  # TODO reduce better
+
+        x = self.hidden(x)
 
         logits = self.final_dense(x)
         outputs = tf.nn.sigmoid(logits)
@@ -284,173 +318,79 @@ class TinyTransformer(tf.keras.Model):
     def compute_loss(self, logits, labels):
         #print(logits)
         #print(labels)
-        loss = tf.reduce_mean(
-            tf.nn.sigmoid_cross_entropy_with_logits(
-                labels=labels, logits=logits[:, 0]))
+
+        loss = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(labels=labels, logits=logits[:, 0]))
+
         return loss
 
+    def tensorboard_profile(self, writer, logdir):
+        with writer.as_default():
+            tf.summary.trace_export(
+                name="Trace_loss",
+                step=0,
+                profiler_outdir=logdir)
 
-    @tf.function(input_signature=[tf.TensorSpec(shape=[params.batch_size, None], dtype=tf.int32), tf.TensorSpec(shape=[params.batch_size, ], dtype=tf.float32)])
+
+    @tf.function(input_signature=[tf.TensorSpec(shape=[None, None], dtype=tf.int32), tf.TensorSpec(shape=[None, ], dtype=tf.float32)])
     def train_step(self, inputs, targets):
 
         with tf.GradientTape() as tape:
             logits, outputs = self.call(inputs=inputs)
             loss = self.compute_loss(logits, targets)
 
-            tf.print("Loss: {}".format(loss))
-
         grads = tape.gradient(loss, self.trainable_variables)
+
+        #tf.print("GRADIENT:")
+        #tf.print(grads)
+
+        #tf.print("OUR ZIP OF GRADS + TRAINABLES IS {}".format(zip(grads, self.trainable_variables)))
         self.optimizer.apply_gradients(zip(grads, self.trainable_variables))
 
+        updates = [tf.reduce_mean(tf.abs(g)) / tf.reduce_mean(tf.abs(v)) if g is not None else None for g, v in
+                   zip(grads, self.trainable_variables)]
+        updates = {v.name: u for v, u in zip(self.trainable_variables, updates) if u is not None}
+
+        return loss, updates
 
     def train(self, input_data):
-        for data in input_data:
-            self.train_step(data[0], data[1])
+
+        writer = tf.summary.create_file_writer(params.logdir)
+
+        for i, data in enumerate(input_data):
+
+            if i == 0:
+                tf.summary.trace_on(graph=True, profiler=True)
+
+            # Run a single training step
+            start_time = time.time()
+            loss, updates = self.train_step(data[0], data[1])
+            time_per_step = time.time() - start_time
+
+            if i == 0:
+                self.tensorboard_profile(writer, params.logdir)
+                tf.summary.trace_off()
+
+            if i % 100 == 0:
+                logger.info("Step: {} - Loss: {} - Time per step: {}".format(i, loss, time_per_step))
+                with writer.as_default():
+                    tf.summary.scalar(f"Losses/total_loss", loss, step=i)
+
+                    for variable in self.trainable_variables:
+                        tf.summary.histogram("Weights/{}".format(variable.name), variable, step=i)
+
+                    for layer, update in updates.items():
+                        tf.summary.scalar("Updates/{}".format(layer), update, step=i)
+
+                    mean_updates = tf.reduce_mean(list(updates.values()))
+                    max_updates = tf.reduce_max(list(updates.values()))
+                    tf.summary.scalar("Mean_Max_Updates/Mean_updates", mean_updates, step=i)
+                    tf.summary.scalar("Mean_Max_Updates/Max_updates", max_updates, step=i)
+
+                    writer.flush()
 
 
 model = TinyTransformer(params)
-print("Compiling model")
-#model.compile(optimizer='adam')
-print("Successfully compiled model")
-print("Getting embeddings")
-#ugh, label = get_embeddings(input_data, params)
-print("Training")
-print('hello')
-
-
+logger.info("Model training")
 model.train(input_data)
+logger.info("Model train completed!")
 
-# TODO replace this with the imperative API
-'''
-def model(features, hparams):
-    input_sequence = features["text"]  # [[ ... ] ... ]
-    label = features["label"]  # 0 or 1
-
-    # Embedding stuff
-    embedded_inputs = embed_tokens(input_sequence,
-                                   hparams)
-    embedded_inputs = norm(embedded_inputs)
-
-    # Transformer stuff
-    output_layer = decoder_block(embedded_inputs, hparams, scope='b1')
-    output_layer = decoder_block(output_layer, hparams, scope='b2')
-    output_layer = decoder_block(output_layer, hparams, scope='b3')
-    output_layer = decoder_block(output_layer, hparams, scope='b4')
-    output_layer = decoder_block(output_layer, hparams, scope='b5')
-    output_layer = tf.reshape(output_layer, [hparams.batch_size, tf.reduce_prod(input_tensor=output_layer.shape[1:])])
-
-    with tf.compat.v1.variable_scope("top_ffn", initializer=tf.compat.v1.truncated_normal_initializer(stddev=0.02)):
-        output_weights = tf.compat.v1.get_variable(
-            "output_weights", [NUM_LABELS, output_layer.shape[1]])
-
-        output_bias = tf.compat.v1.get_variable(
-            "output_bias", [NUM_LABELS], initializer=tf.compat.v1.zeros_initializer())
-
-    logits = tf.matmul(output_layer, output_weights, transpose_b=True)
-    logits = tf.nn.bias_add(logits, output_bias)
-    log_probs = tf.nn.log_softmax(logits, axis=-1)
-
-    one_hot_labels = tf.one_hot(label, depth=NUM_LABELS, dtype=tf.float32)
-
-    predicted_labels = tf.squeeze(tf.argmax(input=log_probs, axis=-1, output_type=tf.int32), name="output")
-    per_example_loss = -tf.reduce_sum(input_tensor=one_hot_labels * log_probs, axis=-1)
-    loss = tf.reduce_mean(input_tensor=per_example_loss)
-
-    return predicted_labels, loss
-'''
-
-
-
-
-
-
-
-
-
-'''
-def model_fn(features, labels, mode, params):
-    params.is_training = mode == tf.estimator.ModeKeys.TRAIN
-    predicted_labels, loss = model(features, params)
-    label_ids = features["label"]
-
-    # Calculate evaluation metrics.
-    def metric_fn(label_ids, predicted_labels):
-        accuracy = tf.compat.v1.metrics.accuracy(label_ids, predicted_labels)
-        # f1_score = tf.contrib.metrics.f1_score(
-        #     label_ids,
-        #     predicted_labels)
-        auc = tf.compat.v1.metrics.auc(
-            label_ids,
-            predicted_labels)
-        recall = tf.compat.v1.metrics.recall(
-            label_ids,
-            predicted_labels)
-        precision = tf.compat.v1.metrics.precision(
-            label_ids,
-            predicted_labels)
-        true_pos = tf.compat.v1.metrics.true_positives(
-            label_ids,
-            predicted_labels)
-        true_neg = tf.compat.v1.metrics.true_negatives(
-            label_ids,
-            predicted_labels)
-        false_pos = tf.compat.v1.metrics.false_positives(
-            label_ids,
-            predicted_labels)
-        false_neg = tf.compat.v1.metrics.false_negatives(
-            label_ids,
-            predicted_labels)
-        return {
-            "eval_accuracy": accuracy,
-            # "f1_score": f1_score,
-            "auc": auc,
-            "precision": precision,
-            "recall": recall,
-            "true_positives": true_pos,
-            "true_negatives": true_neg,
-            "false_positives": false_pos,
-            "false_negatives": false_neg
-        }
-
-    eval_metrics = metric_fn(label_ids, predicted_labels)
-
-    if mode == tf.estimator.ModeKeys.EVAL:
-        return tf.estimator.EstimatorSpec(
-            mode, loss=loss, eval_metric_ops=eval_metrics)
-
-    elif mode == tf.estimator.ModeKeys.TRAIN:
-        #gs = tf.compat.v1.train.get_global_step()
-        optimizer = tf.compat.v1.train.AdamOptimizer(learning_rate=params.learning_rate)
-        train_op = optimizer.minimize(
-            loss, global_step=tf.compat.v1.train.get_or_create_global_step())
-
-        return tf.estimator.EstimatorSpec(
-            mode, loss=loss, train_op=train_op)
-
-
-# params = tf.contrib.training.HParams(
-#       learning_rate=1e-4,
-#       batch_size=32,
-#       vocab_size=8185,
-#       num_heads=1,
-#       max_context=64,
-#       embedding_dim=16,
-#       ffn_expansion=4,
-#       is_training=True)
-
-# HN replace HParams with a params class
-
-
-cfg = tf.estimator.RunConfig(save_checkpoints_steps=1000)
-
-if tf.io.gfile.exists('results/model'):
-    tf.io.gfile.rmtree('results/model')
-
-estimator = tf.estimator.Estimator(model_fn, 'results/model', cfg, params)
-train_spec = tf.estimator.TrainSpec(input_fn=get_input_fn("train", params), max_steps=2000)
-eval_spec = tf.estimator.EvalSpec(input_fn=get_input_fn("test", params), throttle_secs=0)
-
-tf.estimator.train_and_evaluate(estimator, train_spec, eval_spec)
-
-print()
-'''
