@@ -27,7 +27,6 @@ tf.config.experimental_run_functions_eagerly(args.eager)
 logger = get_logger('TRAIN', args.run_name)
 
 # Constants + params
-#NUM_LABELS = 2
 tf.random.set_seed(1)
 
 
@@ -36,14 +35,13 @@ class Params:  # TODO move this to not be... here
         self.learning_rate = 1e-4
         self.batch_size = 32
         self.vocab_size = 8185
-        self.num_heads = 4  # TODO check this implementation, why does it OOM?
+        self.num_heads = 4
         self.max_context = 1024
         self.embedding_dim = 512
         self.ffn_expansion = 4
         self.is_training = True
         self.num_blocks = 1
-        self.logdir = 'tensorboard/' + args.run_name  #'tensorboard'
-        #self.num_labels = 2
+        self.logdir = 'tensorboard/' + args.run_name
 
 
 params = Params()
@@ -58,7 +56,7 @@ dataset, info = tfds.load(name='imdb_reviews/subwords8k', with_info=True, split=
 
 input_data = dataset.take(50000).shuffle(1000).map(dict_to_tuple)\
     .padded_batch(batch_size=params.batch_size, padded_shapes=([None], []), padding_values=(0, 0.0))\
-    .repeat(100).prefetch(buffer_size=1)
+    .repeat(10).prefetch(buffer_size=1)
 
 
 class PositionalEncodingLayer(tf.keras.layers.Layer):
@@ -98,8 +96,6 @@ class mlp(tf.keras.layers.Layer):
         self.hidden2 = tf.keras.layers.Dense(units=self.ffn_dim, name='mlp_h2')
 
     def call(self, x):
-        #h = tf.nn.relu(tf.keras.layers.Dense(self.neurons)(x))
-        #h2 = tf.keras.layers.Dense(x.shape[-1])(h)
         h = self.hidden1(x)
         h2 = self.hidden2(h)
         return h2
@@ -112,7 +108,6 @@ class decoder_block(tf.keras.layers.Layer):
         super(decoder_block, self).__init__()
 
         self.projections = [tf.keras.layers.Dense(params.embedding_dim * 3 // params.num_heads) for _ in range(num_heads)]
-        #self.dense1 = tf.keras.layers.Dense(params.embedding_dim * 3 // params.num_heads)
         self.multihead_attn = tf.keras.layers.Dense(params.embedding_dim, name='multihead_attn')
         self.layernorm1 = tf.keras.layers.LayerNormalization(name='layernorm1')
         self.layernorm2 = tf.keras.layers.LayerNormalization(name='layernorm2')
@@ -126,9 +121,7 @@ class decoder_block(tf.keras.layers.Layer):
 
         all_heads = []
         for i in range(num_heads):
-            #print("Shape of broken stuff: {}".format(x.shape))
             d = self.projections[i](x)
-            #d = conv1d(x, scope=scope, neurons=params.embedding_dim * 3 // num_heads)  # (?, 64, 17)
             q, k, v = tf.split(d, num_or_size_splits=3, axis=-1)
             dim_k = tf.shape(k)[1]
             qk_t = tf.matmul(q, k, transpose_b=True) * tf.math.rsqrt(tf.cast(dim_k, dtype=tf.float32))
@@ -141,18 +134,14 @@ class decoder_block(tf.keras.layers.Layer):
             all_heads.append(head)
 
         all_heads_tensor = tf.concat(all_heads, axis=-1)
-        #multihead_attn = conv1d(all_heads_tensor, scope=scope + 'proj', neurons=params.embedding_dim)
         multihead_attn = self.multihead_attn(all_heads_tensor)
 
         x = multihead_attn
         x = x + residual
-        #x = norm(x, scope=scope + 'norm')
         x = self.layernorm1(x)
-        residual2 = x
-        #x = mlp(x, scope=self.scope + 'mlp', neurons=params.embedding_dim * params.ffn_expansion, hparams=params)
+        residual2 = xs
         x = self.mlp(x)
         x = x + residual2
-        #x = norm(x, scope=scope + 'norm2')
         x = self.layernorm2(x)
 
         #print("DIM FFN is the same as output of this layer which is {}".format(x.shape))
@@ -183,13 +172,11 @@ class TinyTransformer(tf.keras.Model):
         embedded_inputs_with_positions = embedded_inputs + self.positional_embeddings(tf.shape(inputs)[1])
 
         # From embeddings
-        #x = decoder_block(embedded_inputs_with_positions, self.hparams, scope='b1')
         x = embedded_inputs_with_positions
 
         for block in self.blocks:
             x = block(x)
 
-        #x = tf.reshape(x, [self.hparams.batch_size, tf.reduce_prod(input_tensor=x.shape[1:])])
         x = x[:, 0]  # this is better than the reduce_mean according to our friend Bert
         #x = tf.reduce_mean(x, axis=1)  # TODO reduce better
 
@@ -201,11 +188,7 @@ class TinyTransformer(tf.keras.Model):
         return logits, outputs
 
     def compute_loss(self, logits, labels):
-        #print(logits)
-        #print(labels)
-
         loss = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(labels=labels, logits=logits[:, 0]))
-
         return loss
 
     def tensorboard_profile(self, writer, logdir):
@@ -225,10 +208,6 @@ class TinyTransformer(tf.keras.Model):
 
         grads = tape.gradient(loss, self.trainable_variables)
 
-        #tf.print("GRADIENT:")
-        #tf.print(grads)
-
-        #tf.print("OUR ZIP OF GRADS + TRAINABLES IS {}".format(zip(grads, self.trainable_variables)))
         self.optimizer.apply_gradients(zip(grads, self.trainable_variables))
 
         updates = [tf.reduce_mean(tf.abs(g)) / tf.reduce_mean(tf.abs(v)) if g is not None else None for g, v in
