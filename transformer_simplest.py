@@ -7,6 +7,7 @@ import numpy as np
 import argparse
 import time
 from utils import get_logger
+
 os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 
 # Argparse setup
@@ -49,22 +50,6 @@ class Params:  # TODO move this to not be... here
 
 params = Params()
 
-
-'''
-def trim_or_pad(example):
-    example_length = tf.shape(input=example["text"])[0]
-    example["text"] = tf.cond(pred=example_length < params.max_context,
-                              true_fn=lambda: tf.pad(tensor=example["text"],
-                                                     paddings=[[0, params.max_context - example_length]]),
-                              false_fn=lambda: example["text"][:params.max_context])
-    example["text"].set_shape([params.max_context])
-    return {
-        "text": example["text"],
-        "label": example["label"]
-    }
-'''
-
-
 def dict_to_tuple(example):
     return (tf.cast(example['text'][0:params.max_context], tf.int32), tf.cast(example['label'], tf.float32))
 
@@ -73,30 +58,19 @@ def dict_to_tuple(example):
 mode = 'train'
 dataset, info = tfds.load(name='imdb_reviews/subwords8k', with_info=True, split='train')
 
-# TODO this is better but strip it down
-# input_data = dataset.take(50000) \
-#             .shuffle(1000) \
-#             .map(trim_or_pad, num_parallel_calls=tf.data.experimental.AUTOTUNE) \
-#             .repeat() \
-#             .batch(params.batch_size) \
-#             .prefetch(buffer_size=tf.data.experimental.AUTOTUNE)
-
-#input_data = dataset.take(50000).shuffle(1000).map(trim_or_pad).repeat(1).batch(params.batch_size)
 input_data = dataset.take(50000).shuffle(1000).map(dict_to_tuple)\
     .padded_batch(batch_size=params.batch_size, padded_shapes=([None], []), padding_values=(0, 0.0))\
-    .repeat(100)
+    .repeat(100).prefetch(buffer_size=1)
 
-
-
-
-def get_embeddings(input_data, hparams):
-    for features in input_data:
-        input_sequence = features[0]  # [[ ... ] ... ]
-        label = features[1]
-
-    embedded_inputs = norm(embed_tokens(input_sequence, hparams))
-
-    return embedded_inputs, label
+#
+# def get_embeddings(input_data, hparams):
+#     for features in input_data:
+#         input_sequence = features[0]  # [[ ... ] ... ]
+#         label = features[1]
+#
+#     embedded_inputs = norm(embed_tokens(input_sequence, hparams))
+#
+#     return embedded_inputs, label
 
 
 def shape_list(x):
@@ -111,16 +85,6 @@ def expand_tile(value, size):
     value = tf.convert_to_tensor(value=value, name='value')
     ndims = value.shape.ndims
     return tf.tile(tf.expand_dims(value, axis=0), [size] + [1] * ndims)
-
-
-def positions_for(tokens, one_hot=False):
-    nsteps = tf.shape(input=tokens)[1]
-    steps = tf.range(nsteps)
-
-    if one_hot:
-        return tf.one_hot(steps, nsteps)
-
-    return steps
 
 
 class PositionalEncodingLayer(tf.keras.layers.Layer):
@@ -149,59 +113,6 @@ class PositionalEncodingLayer(tf.keras.layers.Layer):
         return self.pos_encoding[:, :seq_len, :]
 
 
-def embed_tokens(tokens, hparams, *, scope="embeddings"):
-    with tf.compat.v1.variable_scope(scope, reuse=tf.compat.v1.AUTO_REUSE):
-        #print(tokens.shape)
-        position_embeddings = tf.compat.v1.get_variable(
-            'position_embeddings', [hparams.max_context, hparams.embedding_dim],
-            initializer=tf.compat.v1.random_normal_initializer(stddev=0.01))
-        token_embeddings = tf.compat.v1.get_variable(
-            'token_embeddings', [hparams.vocab_size, hparams.embedding_dim],
-            initializer=tf.compat.v1.random_normal_initializer(stddev=0.02))
-
-    pe = tf.matmul(positions_for(tokens, one_hot=True), position_embeddings, transpose_b=True)
-    #pe = tf.einsum("sc,cd->sd", positions_for(tokens, one_hot=True), position_embeddings)
-    pe = expand_tile(pe, tf.shape(input=tokens)[0])
-    return tf.gather(token_embeddings, tokens) + pe
-
-
-def norm(x, *, scope=None, axis=-1, epsilon=1e-5):
-    """Normalize to mean = 0, std = 1, then do a diagonal affine transform."""
-    with tf.compat.v1.variable_scope(scope, default_name="norm"):
-        n_state = x.shape[-1]  # .value
-        g = tf.compat.v1.get_variable('g', [n_state], initializer=tf.compat.v1.constant_initializer(1))
-        b = tf.compat.v1.get_variable('b', [n_state], initializer=tf.compat.v1.constant_initializer(0))
-        u = tf.reduce_mean(input_tensor=x, axis=axis, keepdims=True)
-        s = tf.reduce_mean(input_tensor=tf.square(x - u), axis=axis, keepdims=True)
-        x = (x - u) * tf.math.rsqrt(s + epsilon)
-        x = x * g + b
-        return x
-
-
-def conv1d(x, scope, neurons, *, w_init_stdev=0.02):
-    with tf.compat.v1.variable_scope(scope):
-        *start, nx = shape_list(x)
-        w = tf.compat.v1.get_variable(
-            'w', [1, nx, neurons],  # nx from shape_list, neurons = num_features
-            initializer=tf.compat.v1.random_normal_initializer(stddev=w_init_stdev))
-        b = tf.compat.v1.get_variable('b', [neurons], initializer=tf.compat.v1.constant_initializer(0))
-        c = tf.reshape(
-            tf.matmul(tf.reshape(x, [-1, nx]), tf.reshape(w, [-1, neurons])) + b,
-            start + [neurons])
-        return c
-
-'''
-def mlp(x, scope, neurons, *, hparams):
-    with tf.compat.v1.variable_scope(scope):
-        assert int(neurons) - neurons == 0.0
-        neurons = int(neurons)
-        nx = x.shape[-1]  # .value
-        #h = tf.nn.relu(conv1d(x, 'c_fc', neurons))
-        h = tf.nn.relu(tf.keras.layers.Dense(neurons)(x))
-        #h2 = conv1d(h, 'c_proj', nx)
-        h2 = tf.keras.layers.Dense(nx)(h)
-        return h2
-'''
 
 class mlp(tf.keras.layers.Layer):
 
