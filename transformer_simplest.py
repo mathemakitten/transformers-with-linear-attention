@@ -1,6 +1,4 @@
-""" Transformer implementation in Tensorflow 2.0 from scratch.
-This is really just the decoder block stripped from the official GPT-2 implementation.
-"""
+""" Transformer implementation in Tensorflow 2.0 from scratch. """
 
 import os
 import numpy as np
@@ -61,30 +59,6 @@ dataset, info = tfds.load(name='imdb_reviews/subwords8k', with_info=True, split=
 input_data = dataset.take(50000).shuffle(1000).map(dict_to_tuple)\
     .padded_batch(batch_size=params.batch_size, padded_shapes=([None], []), padding_values=(0, 0.0))\
     .repeat(100).prefetch(buffer_size=1)
-
-#
-# def get_embeddings(input_data, hparams):
-#     for features in input_data:
-#         input_sequence = features[0]  # [[ ... ] ... ]
-#         label = features[1]
-#
-#     embedded_inputs = norm(embed_tokens(input_sequence, hparams))
-#
-#     return embedded_inputs, label
-
-
-def shape_list(x):
-    """Deal with dynamic shape in tensorflow cleanly."""
-    static = x.shape.as_list()
-    dynamic = tf.shape(input=x)
-    return [dynamic[i] if s is None else s for i, s in enumerate(static)]
-
-
-def expand_tile(value, size):
-    """Add a new axis of given size."""
-    value = tf.convert_to_tensor(value=value, name='value')
-    ndims = value.shape.ndims
-    return tf.tile(tf.expand_dims(value, axis=0), [size] + [1] * ndims)
 
 
 class PositionalEncodingLayer(tf.keras.layers.Layer):
