@@ -6,6 +6,8 @@ import argparse
 import time
 from utils import get_logger
 
+# Linear attention will be evaluated by https://stats.stackexchange.com/questions/211858/how-to-compute-bits-per-character-bpc
+
 os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 
 # Argparse setup
@@ -62,6 +64,7 @@ input_data = dataset.take(50000).shuffle(1000).map(dict_to_tuple)\
 class PositionalEncodingLayer(tf.keras.layers.Layer):
     def __init__(self, max_position, d_model, name='PositionalEncodingLayer'):
         super(PositionalEncodingLayer, self).__init__()
+
         # Create a table of all possible positional encodings the model will see
         self.pos_encoding = self.compute_positional_encoding(max_position, d_model, name=name)
 
@@ -139,7 +142,8 @@ class decoder_block(tf.keras.layers.Layer):
         x = multihead_attn
         x = x + residual
         x = self.layernorm1(x)
-        residual2 = xs
+
+        residual2 = x
         x = self.mlp(x)
         x = x + residual2
         x = self.layernorm2(x)

@@ -41,7 +41,9 @@ which evaluates the KL-divergence between preds after training
     * This means we need to store preds at every single output of the last normalized attention layer 
     at a cost of `O(nm)` 
     where `n = number of input tokens` and `m = target vocabulary size`
-    
+
+Metric to be used is [bits per character](https://stats.stackexchange.com/questions/211858/how-to-compute-bits-per-character-bpc).
+
 ### Dataset stats 
 Writing these down for my own personal sanity.
 
